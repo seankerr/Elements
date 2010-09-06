@@ -1,0 +1,40 @@
+#! /usr/bin/env python
+#
+# This file is part of Elements.
+# Copyright (c) 2010 Sean Kerr. All rights reserved.
+#
+# The full license is available in the LICENSE file that was distributed with this source code.
+#
+# Author: Noah Fontes <nfontes@invectorate.com>
+
+from elements.async.impl.fastcgi import FastcgiClient
+from elements.async.impl.fastcgi import FastcgiServer
+
+class ExampleClient (FastcgiClient):
+
+    def handle_dispatch (self):
+        self.stdout.writelines(["HTTP/1.1 200 OK\r\n",
+                               "Server: Elements/Test 1.0\r\n"])
+
+        self.stdout.write("\r\n")
+
+        self.stdout.write("<h1>Success!</h1>")
+
+        self.stdout.write("<h2>Params</h2>")
+        for param in self.params.items():
+            self.stdout.write("%s: <span style=\"color: #F00\">%s</span><br>" % param)
+
+        self.stdout.write("<h2>Input</h2>")
+        self.stdout.write("<pre>%s</pre>" % self.stdin)
+
+class ExampleServer (FastcgiServer):
+
+    def handle_client (self, client_socket, client_address, server_address):
+        """
+        Register a new ExampleClient instance.
+        """
+
+        self.register_client(ExampleClient(client_socket, client_address, self, server_address))
+
+if __name__ == "__main__":
+    ExampleServer(hosts = [("0.0.0.0", 9010)]).start()
