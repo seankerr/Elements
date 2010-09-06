@@ -70,9 +70,9 @@ UNKNOWN_TYPE_STRUCT     = struct.Struct('>Bxxxxxxx')
 
 SINGLE_INTEGER_STRUCT   = struct.Struct('>I')
 NAME_VALUE_PAIR_STRUCTS = { 0x0 | 0x0: struct.Struct('>BB'),
-                             0x0 | 0x2: struct.Struct('>BI'),
-                             0x1 | 0x0: struct.Struct('>IB'),
-                             0x1 | 0x2: struct.Struct('>II') }
+                            0x0 | 0x2: struct.Struct('>BI'),
+                            0x1 | 0x0: struct.Struct('>IB'),
+                            0x1 | 0x2: struct.Struct('>II') }
 
 # ----------------------------------------------------------------------------------------------------------------------
 # RECORD WRITERS
@@ -268,8 +268,7 @@ class _OutputWriter (object):
 
         self._client = client
         self._type = type
-        self._closed = False
-        self._has_data = False
+        self._reset()
 
     def write (self, data):
         """
@@ -300,12 +299,8 @@ class _OutputWriter (object):
 
     def close (self):
         """
-        Closes this stream by writing a finalization record (an empty string) to the server and sets a flag preventing
-        further output.
+        Closes this stream by setting a flag preventing further output.
         """
-
-        if not self._closed and self._has_data:
-            self._client._write_record(_StreamRecord(self._type, "", self._client.request_id))
 
         self._closed = True
 
@@ -318,6 +313,10 @@ class _OutputWriter (object):
         """
 
         return self._closed
+
+    def _reset (self):
+        self._closed = False
+        self._has_data = False
 
 # ----------------------------------------------------------------------------------------------------------------------
 
@@ -345,25 +344,29 @@ class FastcgiClient (Client):
 
         Client.__init__(self, client_socket, client_address, server, server_address)
 
-        self._is_allowing_persistence = False                # whether this client will be allowed to handle multiple
-                                                             # connections
-        self._maximum_requests        = None                 # the maximum number of requests this client will accept
-        self._handled_requests        = 0                    # number of requests processed so far
-        self._persistence_requested   = True                 # whether the server wants to use persistence for further
-                                                             # requests
+        self._is_allowing_persistence = False                            # whether this client will be allowed to handle
+                                                                         # multiple connections
+        self._maximum_requests        = None                             # the maximum number of requests this client
+                                                                         # will accept
+        self._handled_requests        = 0                                # number of requests processed so far
+        self._persistence_requested   = True                             # whether the server wants to use persistence
+                                                                         # for further requests
 
-        self._params_io               = StringIO.StringIO()  # temporary (StringIO) storage for FCGI_PARAMS
-        self._has_params              = False                # whether we've read in all the params
+        self._header                  = None                             # header data for this request
 
-        self.request_id               = FCGI_NULL_REQUEST_ID # the current FastCGI request ID for this process
-        self.flags                    = None                 # flags associated with the current request
-        self.params                   = None                 # input parameters to the current request
+        self._params_io               = StringIO.StringIO()              # temporary (StringIO) storage for FCGI_PARAMS
+        self._has_params              = False                            # whether we've read in all the params
 
-        self.stdin                    = StringIO.StringIO()  # FCGI_STDIN
-        self._has_stdin               = False                # whether we've read in stdin completely
+        self.request_id               = FCGI_NULL_REQUEST_ID             # the current FastCGI request ID for this
+                                                                         # process
+        self.flags                    = None                             # flags associated with the current request
+        self.params                   = None                             # input parameters to the current request
 
-        self.stdout                   = None                 # FCGI_STDOUT
-        self.stderr                   = None                 # FCGI_STDERR
+        self.stdin                    = StringIO.StringIO()              # FCGI_STDIN
+        self._has_stdin               = False                            # whether we've read in stdin completely
+
+        self.stdout                   = _OutputWriter(self, FCGI_STDOUT) # FCGI_STDOUT
+        self.stderr                   = _OutputWriter(self, FCGI_STDERR) # FCGI_STDERR
 
         # get the first record and parse from there
         self._read_record()
@@ -383,44 +386,6 @@ class FastcgiClient (Client):
 
     # ------------------------------------------------------------------------------------------------------------------
 
-    def _read_nv_pair (self, data, destination, offset):
-        """
-        Decodes a name-value pair as specified by section 3.4 of the FastCGI protocol.
-
-        @param pair        (str)  Data containing the name-value pair to read.
-        @param destination (dict) The destination dictionary for the pair.
-        @param offset      (int)  An initial offset into the data.
-
-        @return (int) An offset representing the next possible location for a name-value pair in the given data.
-        """
-
-        # section 3.4 of the protocol might be one of the most retarded things I have ever seen in my life
-        nl = vl = None
-
-        if data[offset] > '\x7f':
-            nl, = SINGLE_INTEGER_STRUCT.unpack(data[offset:(offset + 4)]) & 0x7fffffffL
-            offset += 4
-        else:
-            nl = ord(data[offset])
-            offset += 1
-
-        if data[offset] > '\x7f':
-            vl, = SINGLE_INTEGER_STRUCT.unpack(data[offset:(offset + 4)]) & 0x7fffffffL
-            offset += 4
-        else:
-            vl = ord(data[offset])
-            offset += 1
-
-        name = data[offset:(offset + nl)]
-        offset += nl
-
-        value = data[offset:(offset + vl)]
-        offset += vl
-
-        destination[name] = value
-
-        return offset
-
     def _read_nv_pairs (self, data, data_length):
         """
         Reads a sequence of name-value pairs from a data blob.
@@ -431,11 +396,24 @@ class FastcgiClient (Client):
         @return (dict) A dictionary containing the name-value pairs from the input string.
         """
 
+        # section 3.4 of the protocol might be one of the most retarded things I have ever seen in my life
         pairs = {}
 
         v = 0
+        nl = vl = 0 # Declare in the outer scope for performance
         while v < data_length:
-            v = self._read_nv_pair(data, pairs, v)
+            nl = ord(data[v])
+            if nl & 0x80:
+                nl = SINGLE_INTEGER_STRUCT.unpack(data[v:(v + 4)])[0] & 0x7fffffff
+                v += 3
+
+            vl = ord(data[v + 1])
+            if vl & 0x80:
+                vl = SINGLE_INTEGER_STRUCT.unpack(data[v:(v + 4)])[0] & 0x7fffffff
+                v += 3
+
+            pairs[data[(v + 2):(v + 2 + nl)]] = data[(v + 2 + nl):(v + 2 + nl + vl)]
+            v += 2 + nl + vl
 
         return pairs
 
@@ -459,8 +437,7 @@ class FastcgiClient (Client):
             elif key == FCGI_MPXS_CONNS:
                 responses[key] = "1" if self._is_allowing_persistence else "0"
 
-        self._write_record(_GetValuesResultRecord(responses))
-        self.flush()
+        self._write_record_and_flush(_GetValuesResultRecord(responses))
 
     def _handle_record_unknown_type (self, header):
         """
@@ -470,8 +447,7 @@ class FastcgiClient (Client):
         """
 
         unknown_type = header["type"]
-        self._write_record(_UnknownTypeRecord(unknown_type))
-        self.flush()
+        self._write_record_and_flush(_UnknownTypeRecord(unknown_type))
 
     # ------------------------------------------------------------------------------------------------------------------
 
@@ -494,9 +470,6 @@ class FastcgiClient (Client):
 
             self.stdin.seek(0)
 
-            self.stdout = _OutputWriter(self, FCGI_STDOUT)
-            self.stderr = _OutputWriter(self, FCGI_STDERR)
-
             self._params_io.truncate(0)
             self._has_params = False
 
@@ -504,11 +477,6 @@ class FastcgiClient (Client):
 
             self.stdin.truncate(0)
             self._has_stdin = False
-
-            self.stdout.close()
-            self.stdout = None
-            self.stderr.close()
-            self.stderr = None
 
             self._write_record(_EndRequestRecord(0 if status is None else status, FCGI_REQUEST_COMPLETE, self.request_id))
 
@@ -548,6 +516,10 @@ class FastcgiClient (Client):
             self.flags = flags
             self._has_params = False
             self._has_stdin = False
+
+            # reset stdout and stderr
+            self.stdout._reset()
+            self.stderr._reset()
 
             self._handled_requests += 1
 
@@ -609,15 +581,15 @@ class FastcgiClient (Client):
 
     # ------------------------------------------------------------------------------------------------------------------
 
-    def _handle_record (self, header, data):
+    def _handle_record (self, data):
         """
         Handles a record body after headers have been decoded. If the requested record is a management record, this
         method requests the next record from the client.
 
-        @param header (dict) The decoded header data.
         @param data   (str)  The message body.
         """
 
+        header = self._header
         data = data[:header["content_length"]]
 
         if header["request_id"] == FCGI_NULL_REQUEST_ID:
@@ -657,12 +629,11 @@ class FastcgiClient (Client):
         if version != FCGI_VERSION_1:
             raise ClientException("Invalid FastCGI version received in header: %d" % version)
 
-        header = { "type":           type,
-                   "request_id":     request_id,
-                   "content_length": content_length }
+        self._header = { "type":           type,
+                         "request_id":     request_id,
+                         "content_length": content_length }
 
-        self.read_length(content_length + padding_length,
-                         lambda data: self._handle_record(header, data))    
+        self.read_length(content_length + padding_length, self._handle_record)
 
     def _read_record (self):
         """

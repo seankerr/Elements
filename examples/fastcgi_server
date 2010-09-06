@@ -119,5 +119,8 @@ class ExampleServer (FastcgiServer):
 
         self.register_client(ExampleClient(client_socket, client_address, self, server_address))
 
-if __name__ == "__main__":
+def run():
     ExampleServer(hosts = [("0.0.0.0", 9010)]).start()
+
+if __name__ == "__main__":
+    run()

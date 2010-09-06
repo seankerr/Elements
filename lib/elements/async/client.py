@@ -273,14 +273,14 @@ class Client:
         """
 
         buffer = self._read_buffer
-        data   = buffer.getvalue()
 
-        if len(data) >= length:
+        if buffer.tell() >= length:
             # the read buffer has met our length requirement
             self._read_length = None
 
-            buffer.seek(0)
-            buffer.truncate()
+            data = buffer.getvalue()
+
+            buffer.truncate(0)
             buffer.write(data[length:])
 
             callback(data[:length])
