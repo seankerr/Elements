@@ -7,25 +7,90 @@
 #
 # Author: Noah Fontes <nfontes@invectorate.com>
 
+import webob
+import itertools
+
 from elements.async.impl.fastcgi import FastcgiClient
 from elements.async.impl.fastcgi import FastcgiServer
+
+def htmlspecialchars(v):
+    if v is not None:
+        try:
+            table = { '&': '&amp;',
+                      '>': '&gt;',
+                      '<': '&lt;',
+                      '"': '&quot;' }
+            return ''.join([table[c] if c in table else c for c in v])
+        except:
+            pass
+    return v
+
+def htmlspecialchars_tuple(t):
+    return (htmlspecialchars(t[0]), htmlspecialchars(t[1]))
 
 class ExampleClient (FastcgiClient):
 
     def handle_dispatch (self):
+        wsgi_params = dict(self.params)
+        wsgi_params['wsgi.version'] = (1, 0)
+        wsgi_params['wsgi.input'] = self.stdin
+        wsgi_params['wsgi.errors'] = self.stderr
+        wsgi_params['wsgi.url_scheme'] = 'https' if 'HTTPS' in self.params and self.params['HTTPS'].lower() in ('1', 'on') else 'http'
+        wsgi_params['wsgi.multithread'] = False
+        wsgi_params['wsgi.multiprocess'] = True
+
+        request = webob.Request(wsgi_params)
+        request.charset = 'utf-8'
+
         self.stdout.writelines(["HTTP/1.1 200 OK\r\n",
                                "Server: Elements/Test 1.0\r\n"])
 
         self.stdout.write("\r\n")
-
+        
         self.stdout.write("<h1>Success!</h1>")
 
-        self.stdout.write("<h2>Params</h2>")
-        for param in self.params.items():
+        self.stdout.write("<h2>Raw</h2>")
+
+        self.stdout.write("<h3>Raw Environment</h3>")
+        for param in itertools.imap(htmlspecialchars_tuple, self.params.iteritems()):
             self.stdout.write("%s: <span style=\"color: #F00\">%s</span><br>" % param)
 
-        self.stdout.write("<h2>Input</h2>")
-        self.stdout.write("<pre>%s</pre>" % self.stdin)
+        self.stdout.write("<h3>Raw Input</h3>")
+        self.stdout.write("<pre>%s</pre>" % htmlspecialchars(self.stdin.getvalue()))
+
+        self.stdout.write("<h2>using webob.Request: %s</h2>" % htmlspecialchars(repr(request)))
+
+        self.stdout.write("<h3>Environment</h3>")
+        self.stdout.write("Scheme: <span style=\"color: #F00\">%s</span><br>" % htmlspecialchars(request.scheme))
+        self.stdout.write("Method: <span style=\"color: #F00\">%s</span><br>" % htmlspecialchars(request.method))
+        self.stdout.write("Script name: <span style=\"color: #F00\">%s</span><br>" % htmlspecialchars(request.script_name))
+        self.stdout.write("Path info: <span style=\"color: #F00\">%s</span><br>" % htmlspecialchars(request.path_info))
+        self.stdout.write("Content length: <span style=\"color: #F00\">%s</span><br>" % request.content_length)
+        self.stdout.write("Remote user: <span style=\"color: #F00\">%s</span><br>" % htmlspecialchars(request.remote_user))
+        self.stdout.write("Remote address: <span style=\"color: #F00\">%s</span><br>" % htmlspecialchars(request.remote_addr))
+        self.stdout.write("Query string: <span style=\"color: #F00\">%s</span><br>" % htmlspecialchars(request.query_string))
+        self.stdout.write("Server name: <span style=\"color: #F00\">%s</span><br>" % htmlspecialchars(request.server_name))
+        self.stdout.write("Server port: <span style=\"color: #F00\">%s</span><br>" % request.server_port)
+
+        self.stdout.write("<h3>Headers</h3>")
+        for header in itertools.imap(htmlspecialchars_tuple, request.headers.iteritems()):
+            self.stdout.write("%s: <span style=\"color: #F00\">%s</span><br>" % header)
+
+        self.stdout.write("<h3>Cookies</h3>")
+        for cookie in itertools.imap(htmlspecialchars_tuple, request.cookies.iteritems()):
+            self.stdout.write("%s: <span style=\"color: #F00\">%s</span><br>" % cookie)
+
+        self.stdout.write("<h3>Parameters</h3>")
+        for param in itertools.imap(htmlspecialchars_tuple, request.params.iteritems()):
+            self.stdout.write("%s: <span style=\"color: #F00\">%s</span><br>" % param)
+
+        self.stdout.write("<h3>GET</h3>")
+        for param in itertools.imap(htmlspecialchars_tuple, request.GET.iteritems()):
+            self.stdout.write("%s: <span style=\"color: #F00\">%s</span><br>" % param)
+
+        self.stdout.write("<h3>POST</h3>")
+        for param in itertools.imap(htmlspecialchars_tuple, request.POST.iteritems()):
+            self.stdout.write("%s: <span style=\"color: #F00\">%s</span><br>" % param)
 
 class ExampleServer (FastcgiServer):
 

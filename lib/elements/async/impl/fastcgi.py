@@ -279,9 +279,12 @@ class _OutputWriter (object):
         @param data (object) The data to write.
         """
 
-        if not self._closed and len(data) > 0:
-            self._client._write_record(_StreamRecord(self._type, data, self._client.request_id))
-            self._has_data = True
+        if not self._closed:
+            while len(data) > 0:
+                self._client._write_record(_StreamRecord(self._type, data[:65535], self._client.request_id))
+                self._has_data = True
+
+                data = data[65535:]
 
     def writelines (self, sequence):
         """
@@ -352,14 +355,14 @@ class FastcgiClient (Client):
 
         self._params_io               = None                 # temporary (StringIO) storage for FCGI_PARAMS
         self._has_params              = False                # whether we've read in all the params
-        self._stdin_io                = None                 # temporary (StringIO) storage for FCGI_STDIN
-        self._has_stdin               = False                # whether we've read in stdin completely
 
         self.request_id               = FCGI_NULL_REQUEST_ID # the current FastCGI request ID for this process
         self.flags                    = None                 # flags associated with the current request
         self.params                   = None                 # input parameters to the current request
 
         self.stdin                    = None                 # FCGI_STDIN
+        self._has_stdin               = False                # whether we've read in stdin completely
+
         self.stdout                   = None                 # FCGI_STDOUT
         self.stderr                   = None                 # FCGI_STDERR
 
@@ -491,7 +494,8 @@ class FastcgiClient (Client):
         # need both params and stdin to dispatch a request
         if self._has_params and self._has_stdin:
             self.params = self._read_nv_pairs(self._params_io.getvalue())
-            self.stdin = self._stdin_io.getvalue()
+
+            self.stdin.seek(0)
 
             self.stdout = _OutputWriter(self, FCGI_STDOUT)
             self.stderr = _OutputWriter(self, FCGI_STDERR)
@@ -499,11 +503,12 @@ class FastcgiClient (Client):
             self._params_io.close()
             self._params_io = None
             self._has_params = False
-            self._stdin_io.close()
-            self._stdin_io = None
-            self._has_stdin = False
 
             status = self.handle_dispatch()
+
+            self.stdin.close()
+            self.stdin = None
+            self._has_stdin = False
 
             self.stdout.close()
             self.stdout = None
@@ -548,7 +553,7 @@ class FastcgiClient (Client):
             self.flags = flags
             self._params_io = StringIO.StringIO()
             self._has_params = False
-            self._stdin_io = StringIO.StringIO()
+            self.stdin = StringIO.StringIO()
             self._has_stdin = False
 
             self._handled_requests += 1
@@ -605,7 +610,7 @@ class FastcgiClient (Client):
         if header["content_length"] == 0:
             self._has_stdin = True
         else:
-            self._stdin_io.write(data)
+            self.stdin.write(data)
 
         self._maybe_dispatch()
 
