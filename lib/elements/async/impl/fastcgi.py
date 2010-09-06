@@ -6,6 +6,7 @@
 # Author: Noah Fontes <nfontes@invectorate.com>
 
 import struct
+import os
 try: import cStringIO as StringIO
 except ImportError: import StringIO
 
@@ -61,21 +62,17 @@ FCGI_MPXS_CONNS = "FCGI_MPXS_CONNS"
 
 # ----------------------------------------------------------------------------------------------------------------------
 
-HEADER_STRUCT            = struct.Struct('>BBHHBx')
+HEADER_STRUCT           = struct.Struct('>BBHHBx')
 
-BEGIN_REQUEST_STRUCT     = struct.Struct('>HBxxxxx')
-END_REQUEST_STRUCT       = struct.Struct('>IBxxx')
-UNKNOWN_TYPE_STRUCT      = struct.Struct('>Bxxxxxxx')
+BEGIN_REQUEST_STRUCT    = struct.Struct('>HBxxxxx')
+END_REQUEST_STRUCT      = struct.Struct('>IBxxx')
+UNKNOWN_TYPE_STRUCT     = struct.Struct('>Bxxxxxxx')
 
-NAME_VALUE_PAIR_STRUCTS  = { (1, 1): struct.Struct('>BB'),
-                             (1, 4): struct.Struct('>BI'),
-                             (4, 1): struct.Struct('>IB'),
-                             (4, 4): struct.Struct('>II') }
-
-NAME_VALUE_PAIR_ENCODERS = { 1: lambda length: length,
-                             4: lambda length: length | 0x80000000L }
-NAME_VALUE_PAIR_DECODERS = { 1: lambda length: length,
-                             4: lambda length: length & ~0x80000000L }
+SINGLE_INTEGER_STRUCT   = struct.Struct('>I')
+NAME_VALUE_PAIR_STRUCTS = { 0x0 | 0x0: struct.Struct('>BB'),
+                             0x0 | 0x2: struct.Struct('>BI'),
+                             0x1 | 0x0: struct.Struct('>IB'),
+                             0x1 | 0x2: struct.Struct('>II') }
 
 # ----------------------------------------------------------------------------------------------------------------------
 # RECORD WRITERS
@@ -143,13 +140,15 @@ class _GetValuesResultRecord (_Record):
         name_length = len(name)
         value_length = len(value)
 
-        nll = 1 if name_length < 128 else 4
-        vll = 1 if value_length < 128 else 4
+        flags = 0x0
+        if name_length > 127:
+            flags |= 0x1
+            name_length |= 0x80000000L
+        if value_length > 127:
+            flags |= 0x2
+            value_length |= 0x80000000L
 
-        destination.write(NAME_VALUE_PAIR_STRUCTS[(nll, vll)].pack(
-                NAME_VALUE_PAIR_ENCODERS[nll](name_length),
-                NAME_VALUE_PAIR_ENCODERS[vll](value_length)
-        ))
+        destination.write(NAME_VALUE_PAIR_STRUCTS[flags].pack(name_length, value_length))
         destination.write(name)
         destination.write(value)
 
@@ -353,14 +352,14 @@ class FastcgiClient (Client):
         self._persistence_requested   = True                 # whether the server wants to use persistence for further
                                                              # requests
 
-        self._params_io               = None                 # temporary (StringIO) storage for FCGI_PARAMS
+        self._params_io               = StringIO.StringIO()  # temporary (StringIO) storage for FCGI_PARAMS
         self._has_params              = False                # whether we've read in all the params
 
         self.request_id               = FCGI_NULL_REQUEST_ID # the current FastCGI request ID for this process
         self.flags                    = None                 # flags associated with the current request
         self.params                   = None                 # input parameters to the current request
 
-        self.stdin                    = None                 # FCGI_STDIN
+        self.stdin                    = StringIO.StringIO()  # FCGI_STDIN
         self._has_stdin               = False                # whether we've read in stdin completely
 
         self.stdout                   = None                 # FCGI_STDOUT
@@ -384,61 +383,59 @@ class FastcgiClient (Client):
 
     # ------------------------------------------------------------------------------------------------------------------
 
-    def _read_nv_pair (self, pair):
+    def _read_nv_pair (self, data, destination, offset):
         """
         Decodes a name-value pair as specified by section 3.4 of the FastCGI protocol.
 
-        @param pair (str) Data containing the name-value pair to read.
+        @param pair        (str)  Data containing the name-value pair to read.
+        @param destination (dict) The destination dictionary for the pair.
+        @param offset      (int)  An initial offset into the data.
 
-        @return (tuple) A tuple containing the pair's name, value, and an offset into the input data representing the
-                        next place a tuple could be read.
+        @return (int) An offset representing the next possible location for a name-value pair in the given data.
         """
 
         # section 3.4 of the protocol might be one of the most retarded things I have ever seen in my life
-        if len(pair) < 2:
-            raise FastcgiException("Could not decode name-value pair: Input length too small (%d)" % len(pair))
+        nl = vl = None
 
-        nll = vll = 1
-        if (ord(pair[0]) >> 7) == 1:
-            # name is 4 bytes
-            if len(pair) < 4 + vl:
-                raise FastcgiException("Could not decode name-value pair: Input length too small (%d)" % len(pair))
-            nll = 4
-        if (ord(pair[nll]) >> 7) == 1:
-            # value is 4 bytes
-            if len(pair) < 4 + nl:
-                raise FastcgiException("Could not decode name-value pair: Input length too small (%d)" % len(pair))
-            vll = 4
+        if data[offset] > '\x7f':
+            nl, = SINGLE_INTEGER_STRUCT.unpack(data[offset:(offset + 4)]) & 0x7fffffffL
+            offset += 4
+        else:
+            nl = ord(data[offset])
+            offset += 1
 
-        offset = nll + vll
+        if data[offset] > '\x7f':
+            vl, = SINGLE_INTEGER_STRUCT.unpack(data[offset:(offset + 4)]) & 0x7fffffffL
+            offset += 4
+        else:
+            vl = ord(data[offset])
+            offset += 1
 
-        (nl, vl) = NAME_VALUE_PAIR_STRUCTS[(nll, vll)].unpack(pair[:offset])
-        nl = NAME_VALUE_PAIR_DECODERS[nll](nl)
-        vl = NAME_VALUE_PAIR_DECODERS[vll](vl)
-        if len(pair[offset:]) < (nl + vl):
-            raise FastcgiException("Could not decode name-value pair: data length too small: " +
-                                   "%d (expected %d (%d) + %d (%d) = %d)" % (len(pair[offset:]), nl, vl, nl + vl))
+        name = data[offset:(offset + nl)]
+        offset += nl
 
-        name = pair[offset:(offset + nl)]
-        value = pair[(offset + nl):(offset + nl + vl)]
+        value = data[offset:(offset + vl)]
+        offset += vl
 
-        return (name, value, offset + nl + vl)
+        destination[name] = value
 
-    def _read_nv_pairs (self, data):
+        return offset
+
+    def _read_nv_pairs (self, data, data_length):
         """
         Reads a sequence of name-value pairs from a data blob.
 
-        @param data (str) The string from which name-value pairs should be read.
+        @param data        (str) The string from which name-value pairs should be read.
+        @param data_length (int) The length of the data.
 
         @return (dict) A dictionary containing the name-value pairs from the input string.
         """
 
         pairs = {}
 
-        while len(data) > 0:
-            (name, value, offset) = self._read_nv_pair(data)
-            pairs[name] = value
-            data = data[offset:]
+        v = 0
+        while v < data_length:
+            v = self._read_nv_pair(data, pairs, v)
 
         return pairs
 
@@ -453,7 +450,7 @@ class FastcgiClient (Client):
                              decode.
         """
 
-        requests = self._read_nv_pairs(data)
+        requests = self._read_nv_pairs(data, len(data))
         responses = {}
 
         for key in requests.keys():
@@ -493,21 +490,19 @@ class FastcgiClient (Client):
 
         # need both params and stdin to dispatch a request
         if self._has_params and self._has_stdin:
-            self.params = self._read_nv_pairs(self._params_io.getvalue())
+            self.params = self._read_nv_pairs(self._params_io.getvalue(), self._params_io.tell())
 
             self.stdin.seek(0)
 
             self.stdout = _OutputWriter(self, FCGI_STDOUT)
             self.stderr = _OutputWriter(self, FCGI_STDERR)
 
-            self._params_io.close()
-            self._params_io = None
+            self._params_io.truncate(0)
             self._has_params = False
 
             status = self.handle_dispatch()
 
-            self.stdin.close()
-            self.stdin = None
+            self.stdin.truncate(0)
             self._has_stdin = False
 
             self.stdout.close()
@@ -551,9 +546,7 @@ class FastcgiClient (Client):
 
         if role == FCGI_RESPONDER:
             self.flags = flags
-            self._params_io = StringIO.StringIO()
             self._has_params = False
-            self.stdin = StringIO.StringIO()
             self._has_stdin = False
 
             self._handled_requests += 1
