@@ -5,18 +5,9 @@
 #
 # Author: Sean Kerr <sean@code-box.org>
 
-try:
-    from fcntl import fcntl   as fcntl_func
-    from fcntl import F_GETFL as fcntl_getfl
-    from fcntl import F_SETFL as fcntl_setfl
-
-except:
-    from win32_support import fcntl   as fcntl_func
-    from win32_support import F_GETFL as fcntl_getfl
-    from win32_support import F_SETFL as fcntl_setfl
-
 import errno
 import os
+import platform
 import select
 import signal
 import socket
@@ -41,9 +32,9 @@ from elements.core.exception import ServerException
 
 class Server:
 
-    def __init__ (self, hosts=None, daemonize=False, user=None, group=None, umask=None, chroot=None, loop_interval=1,
-                  timeout=None, timeout_interval=10, worker_count=0, channel_count=1, event_manager=None,
-                  print_settings=True):
+    def __init__ (self, hosts=None, daemonize=False, user=None, group=None, umask=None, chroot=None, long_running=False,
+                  loop_interval=1, timeout=None, timeout_interval=10, worker_count=0, channel_count=1,
+                  event_manager=None, print_settings=True):
         """
         Create a new Server instance.
 
@@ -53,6 +44,8 @@ class Server:
         @param group            (str)       The process group.
         @param umask            (octal)     The process user mask.
         @param chroot           (str)       The root directory into which the process will be forced.
+        @param long_running     (bool)      Indicates that each client is long-running and only one client should be
+                                            handled at a time per process.
         @param loop_interval    (int/float) The interval between loop calls.
         @param timeout          (int/float) The client idle timeout.
         @param timeout_interval (int)       The interval between checks for client timeouts.
@@ -75,7 +68,7 @@ class Server:
         self._hosts                    = []               # host client/server sockets
         self._is_daemon                = daemonize        # indicates that this is running as a daemon
         self._is_listening             = False            # indicates that this process is listening on all hosts
-        self._is_long_running          = False            # indicates that clients are long-running
+        self._is_long_running          = long_running     # indicates that clients are long-running
         self._is_parent                = True             # indicates that this process is the parent
         self._is_shutting_down         = False            # indicates that this server is shutting down
         self._is_serving_client        = False            # indicates that a client is being served
@@ -117,9 +110,6 @@ class Server:
         self._event_manager_poll       = self._event_manager.poll
         self._event_manager_register   = self._event_manager.register
         self._event_manager_unregister = self._event_manager.unregister
-
-        # update server with proper events
-        self.EVENT_LINGER = self._event_manager.EVENT_LINGER
 
         # update the client module with the proper events
         client.EVENT_LINGER = self._event_manager.EVENT_LINGER
@@ -187,8 +177,10 @@ class Server:
                 self.add_host(*host)
 
         # register signal handlers
-        signal.signal(signal.SIGCHLD, self.handle_signal)
-        signal.signal(signal.SIGHUP,  self.handle_signal)
+        if platform.system() != "Windows":
+            signal.signal(signal.SIGCHLD, self.handle_signal)
+            signal.signal(signal.SIGHUP,  self.handle_signal)
+
         signal.signal(signal.SIGINT,  self.handle_signal)
         signal.signal(signal.SIGTERM, self.handle_signal)
 
@@ -206,7 +198,7 @@ class Server:
             host = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
             # disable blocking
-            fcntl_func(host.fileno(), fcntl_setfl, fcntl_func(host.fileno(), fcntl_getfl) | os.O_NONBLOCK)
+            host.setblocking(0)
 
             host.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             host.bind((ip, port))
@@ -310,6 +302,11 @@ class Server:
         @param frame (object) The stack frame.
         """
 
+        if platform.system() == "Windows":
+            self._is_shutting_down = True
+
+            return
+
         if code != signal.SIGCHLD:
             self._is_shutting_down = True
 
@@ -321,8 +318,6 @@ class Server:
         if pid in self._channels:
             for channel in self._channels[pid]:
                 self.unregister_client(channel)
-
-                channel.handle_shutdown()
 
             del self._channels[pid]
 
@@ -403,7 +398,7 @@ class Server:
         self._clients[client._fileno] = client
 
         if not client._is_channel or not client._is_blocking:
-            self._event_manager.register(client._fileno, client._events & (~self.EVENT_LINGER))
+            self._event_manager.register(client._fileno, client._events)
 
             self._is_serving_client = True
 
@@ -424,6 +419,13 @@ class Server:
         """
         Unregister all clients and kill worker processes.
         """
+
+        if platform.system() == "Windows":
+            # unregister and shutdown all clients
+            for client in self._clients.values():
+                self.unregister_client(client)
+
+            return
 
         # remove the sigchld handler
         signal.signal(signal.SIGCHLD, signal.SIG_IGN)
@@ -471,8 +473,8 @@ class Server:
             pair = socket.socketpair()
 
             # disable blocking
-            fcntl_func(pair[0].fileno(), fcntl_setfl, fcntl_func(pair[0].fileno(), fcntl_getfl) | os.O_NONBLOCK)
-            fcntl_func(pair[1].fileno(), fcntl_setfl, fcntl_func(pair[1].fileno(), fcntl_getfl) | os.O_NONBLOCK)
+            pair[0].setblocking(0)
+            pair[1].setblocking(0)
 
             parent_sockets.append(pair[0])
             worker_sockets.append(pair[1])
@@ -560,10 +562,9 @@ class Server:
             if self._worker_count == 0:
                 self.listen(True)
 
-        EVENT_ERROR  = self._event_manager.EVENT_ERROR
-        EVENT_LINGER = self._event_manager.EVENT_LINGER
-        EVENT_READ   = self._event_manager.EVENT_READ
-        EVENT_WRITE  = self._event_manager.EVENT_WRITE
+        EVENT_ERROR = self._event_manager.EVENT_ERROR
+        EVENT_READ  = self._event_manager.EVENT_READ
+        EVENT_WRITE = self._event_manager.EVENT_WRITE
 
         # we cache some methods/vars locally to avoid dereferencing in each loop which could potentially be
         # thousands of times per second
@@ -599,7 +600,7 @@ class Server:
 
                         # update the events for any clients that were changed during the loop handler
                         for client in loop_clients:
-                            modify_func(client._fileno, client._events & (~EVENT_LINGER))
+                            modify_func(client._fileno, client._events)
 
                         # execute a timeout callback at most every [timeout interval] seconds
                         if self._timeout and now - self._timeout_interval > timeout_check:
@@ -607,7 +608,7 @@ class Server:
 
                             # update the events for any clients that have timed out and are still going to be processed
                             for client in self.handle_timeout_check():
-                                modify_func(client._fileno, client._events & (~EVENT_LINGER))
+                                modify_func(client._fileno, client._events)
 
                     except Exception, e:
                         # an unhandled exception has been caught
@@ -652,13 +653,13 @@ class Server:
                             continue
 
                         # update the events
-                        modify_func(fileno, client._events & (~EVENT_LINGER))
+                        modify_func(fileno, client._events)
 
                     # update the client time
                     client._last_access_time = now
 
             except socket.error, e:
-                if e[0] not in (errno.EAGAIN, errno.EWOULDBLOCK):
+                if e[0] not in (errno.EWOULDBLOCK, errno.EAGAIN):
                     # an unrecoverable socket error has occurred
                     unregister_client_func(client)
 
@@ -678,7 +679,7 @@ class Server:
                         continue
 
                     # update the events
-                    modify_func(fileno, client._events & (~EVENT_LINGER))
+                    modify_func(fileno, client._events)
 
                 # update the client time
                 client._last_access_time = now

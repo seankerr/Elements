@@ -4,27 +4,16 @@
 # The full license is available in the LICENSE file that was distributed with this source code.
 #
 # Author: Sean Kerr <sean@code-box.org>
+# Author: Noah Fontes <nfontes@invectorate.com>
 
 try:
     import cStringIO as StringIO
 except:
     import StringIO
 
-try:
-    from fcntl import fcntl   as fcntl_func
-    from fcntl import F_GETFL as fcntl_getfl
-    from fcntl import F_SETFL as fcntl_setfl
-
-except:
-    from win32_support import fcntl   as fcntl_func
-    from win32_support import F_GETFL as fcntl_getfl
-    from win32_support import F_SETFL as fcntl_setfl
-
 import os
 import socket
 import time
-
-from os import O_NONBLOCK as o_nonblock
 
 from elements.core.exception import ChannelException
 from elements.core.exception import ClientException
@@ -69,7 +58,7 @@ class Client:
         self._write_index      = 0                      # write buffer index
 
         # disable blocking
-        fcntl_func(self._fileno, fcntl_setfl, fcntl_func(self._fileno, fcntl_getfl) | o_nonblock)
+        client_socket.setblocking(0)
 
     # ------------------------------------------------------------------------------------------------------------------
 
@@ -87,8 +76,7 @@ class Client:
         Clear the write buffer.
         """
 
-        self._write_buffer.seek(0)
-        self._write_buffer.truncate()
+        self._write_buffer.truncate(0)
 
         self._write_index = 0
 
@@ -180,8 +168,8 @@ class Client:
         """
 
         buffer = self._write_buffer
-        data   = buffer.getvalue()
-        length = self._client_socket.send(data[self._write_index:])
+        data   = buffer.getvalue()[self._write_index:]
+        length = self._client_socket.send(data)
 
         # increase the write index (this helps cut back on small writes)
         self._write_index += length
@@ -197,8 +185,7 @@ class Client:
         # there is more data to write
         # note: we speed up small writes by eliminating the seek/truncate/write on every call
         if self._write_index >= 65535:
-            buffer.seek(0)
-            buffer.truncate()
+            buffer.truncate(0)
             buffer.write(data[self._write_index:])
 
             self._write_index = 0
@@ -241,8 +228,7 @@ class Client:
 
             pos += len(delimiter)
 
-            buffer.seek(0)
-            buffer.truncate()
+            buffer.truncate(0)
             buffer.write(data[pos:])
 
             callback(data[:pos])
@@ -363,7 +349,7 @@ class BlockingChannelClient (ChannelClient):
         self._is_blocking = True
 
         # re-enable blocking
-        fcntl_func(socket.fileno(), fcntl_setfl, fcntl_func(socket.fileno(), fcntl_getfl) & ~o_nonblock)
+        socket.setblocking(1)
 
     # ------------------------------------------------------------------------------------------------------------------
 
