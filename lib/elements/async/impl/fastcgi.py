@@ -5,10 +5,13 @@
 #
 # Author: Noah Fontes <nfontes@invectorate.com>
 
-import struct
+try:
+    import cStringIO as StringIO
+except ImportError:
+    import StringIO
+
 import os
-try: import cStringIO as StringIO
-except ImportError: import StringIO
+import struct
 
 from elements.core.exception import ClientException
 from elements.core.exception import ProtocolException
@@ -144,6 +147,7 @@ class _GetValuesResultRecord (_Record):
         if name_length > 127:
             flags |= 0x1
             name_length |= 0x80000000L
+
         if value_length > 127:
             flags |= 0x2
             value_length |= 0x80000000L
@@ -434,6 +438,7 @@ class FastcgiClient (Client):
         for key in requests.keys():
             if key == FCGI_MAX_CONNS or key == FCGI_MAX_REQS:
                 responses[key] = str(self._server.worker_count)
+
             elif key == FCGI_MPXS_CONNS:
                 responses[key] = "1" if self._is_allowing_persistence else "0"
 
@@ -482,6 +487,7 @@ class FastcgiClient (Client):
 
             # flush everything at the end of the request; this can result in the connection closing
             self.flush()
+
         else:
             self._read_record()
 
@@ -507,6 +513,7 @@ class FastcgiClient (Client):
         # do we want to keep persistence enabled?
         if flags & FCGI_KEEP_CONN == 0 or (self._maximum_requests and self._handled_requests == self._maximum_requests):
             self._persistence_requested = False
+
         elif self._maximum_requests and self._handled_requests > self._maximum_requests:
             self._persistence_requested = False
             self._write_record_and_flush(_EndRequestRecord(0, FCGI_OVERLOADED, request_id))
@@ -524,6 +531,7 @@ class FastcgiClient (Client):
             self._handled_requests += 1
 
             self._read_record()
+
         else:
             self._write_record_and_flush(_EndRequestRecord(0, FCGI_UNKNOWN_ROLE, request_id))
 
@@ -553,6 +561,7 @@ class FastcgiClient (Client):
 
         if header["content_length"] == 0:
             self._has_params = True
+
         else:
             self._params_io.write(data)
 
@@ -574,6 +583,7 @@ class FastcgiClient (Client):
 
         if header["content_length"] == 0:
             self._has_stdin = True
+
         else:
             self.stdin.write(data)
 
@@ -596,24 +606,31 @@ class FastcgiClient (Client):
             # management records
             if header["type"] == FCGI_GET_VALUES:
                 self._handle_record_get_values(header, data)
+
             else:
                 self._handle_record_unknown_type(header)
 
             self._read_record()
+
         else:
             # request headers
             if header["type"] == FCGI_BEGIN_REQUEST:
                 self._handle_record_begin_request(header, data)
+
             elif header["type"] == FCGI_ABORT_REQUEST:
                 self._handle_record_abort_request(header, data)
+
             elif header["type"] == FCGI_PARAMS:
                 self._handle_record_params(header, data)
+
             elif header["type"] == FCGI_STDIN:
                 self._handle_record_stdin(header, data)
+
             elif header["type"] == FCGI_DATA:
                 # there's a fairly good chance that we've already dispatched the request by the time we receive this, so
                 # we just won't support it
                 pass
+
             else:
                 raise FastcgiException("Unexpected record type %d while trying to handle request", header["type"])
 
@@ -662,6 +679,7 @@ class FastcgiClient (Client):
             if self._is_allowing_persistence and self._persistence_requested:
                 self.clear_write_buffer()
                 self._read_record()
+
             else:
                 self._events &= ~EVENT_READ
 
