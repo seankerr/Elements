@@ -168,13 +168,14 @@ class Client:
         """
 
         buffer = self._write_buffer
-        data   = buffer.getvalue()[self._write_index:]
-        length = self._client_socket.send(data)
+        data   = buffer.getvalue()
+        chunk  = data[self._write_index:]
+        length = self._client_socket.send(chunk)
 
         # increase the write index (this helps cut back on small writes)
         self._write_index += length
 
-        if length == len(data):
+        if length == len(chunk):
             # write buffer has been entirely written
             self._events &= ~EVENT_WRITE
 
@@ -262,13 +263,12 @@ class Client:
         @param callback (method) The callback to execute once the length has been read entirely.
         """
 
-        buffer = self._read_buffer
-
-        if buffer.tell() >= length:
+        if self._read_buffer.tell() >= length:
             # the read buffer has met our length requirement
             self._read_length = None
 
-            data = buffer.getvalue()
+            buffer = self._read_buffer
+            data   = buffer.getvalue()
 
             buffer.truncate(0)
             buffer.write(data[length:])
