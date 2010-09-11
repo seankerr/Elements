@@ -140,16 +140,16 @@ class _GetValuesResultRecord (_Record):
         @param destination (file) The object to which the name/value pair should be written.
         """
 
-        name_length = len(name)
+        name_length  = len(name)
         value_length = len(value)
 
         flags = 0x0
         if name_length > 127:
-            flags |= 0x1
+            flags       |= 0x1
             name_length |= 0x80000000L
 
         if value_length > 127:
-            flags |= 0x2
+            flags        |= 0x2
             value_length |= 0x80000000L
 
         destination.write(NAME_VALUE_PAIR_STRUCTS[flags].pack(name_length, value_length))
@@ -213,7 +213,7 @@ class _EndRequestRecord (_Record):
 
         _Record.__init__(self, FCGI_END_REQUEST, request_id)
         self._application_status = application_status
-        self._protocol_status = protocol_status
+        self._protocol_status    = protocol_status
 
     def render (self):
         """
@@ -271,7 +271,7 @@ class _OutputWriter (object):
         """
 
         self._client = client
-        self._type = type
+        self._type   = type
         self._reset()
 
     def write (self, data):
@@ -319,7 +319,7 @@ class _OutputWriter (object):
         return self._closed
 
     def _reset (self):
-        self._closed = False
+        self._closed   = False
         self._has_data = False
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -403,8 +403,9 @@ class FastcgiClient (Client):
         # section 3.4 of the protocol might be one of the most retarded things I have ever seen in my life
         pairs = {}
 
-        v = 0
-        nl = vl = 0 # Declare in the outer scope for performance
+        v  = 0
+        nl = 0 # declare in the outer scope for performance
+        vl = 0
         while v < data_length:
             nl = ord(data[v])
             if nl & 0x80:
@@ -432,7 +433,7 @@ class FastcgiClient (Client):
                              decode.
         """
 
-        requests = self._read_nv_pairs(data, len(data))
+        requests  = self._read_nv_pairs(data, len(data))
         responses = {}
 
         for key in requests.keys():
@@ -522,7 +523,7 @@ class FastcgiClient (Client):
         if role == FCGI_RESPONDER:
             self.flags = flags
             self._has_params = False
-            self._has_stdin = False
+            self._has_stdin  = False
 
             # reset stdout and stderr
             self.stdout._reset()
@@ -600,7 +601,7 @@ class FastcgiClient (Client):
         """
 
         header = self._header
-        data = data[:header["content_length"]]
+        data   = data[:header["content_length"]]
 
         if header["request_id"] == FCGI_NULL_REQUEST_ID:
             # management records
